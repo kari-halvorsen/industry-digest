@@ -1,20 +1,3 @@
-"""
-Industry Weekly Digest
-----------------------
-Pulls the latest news on target companies using the Anthropic API
-with web search, organises it by news type, and sends a formatted
-HTML email via Gmail every Monday morning.
-
-Run manually:  python src/digest.py
-Automated:     GitHub Actions (.github/workflows/weekly_digest.yml)
-
-Required environment variables (set as GitHub Secrets):
-  ANTHROPIC_API_KEY   — from platform.anthropic.com
-  GMAIL_ADDRESS       — your Gmail address
-  GMAIL_APP_PASSWORD  — Gmail App Password (not your login password)
-  RECIPIENT_EMAIL     — where to send the digest (can be same as GMAIL_ADDRESS)
-"""
-
 import os
 import json
 import smtplib
@@ -22,12 +5,6 @@ import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import anthropic
-import time
-import random
-
-# ---------------------------------------------------------------------------
-# Company list — edit freely, organised by tier
-# ---------------------------------------------------------------------------
 
 COMPANIES = {
     "Tier 1 — Cybersecurity": [
@@ -49,89 +26,52 @@ COMPANIES = {
     ],
 }
 
-# Flatten for the API prompt
 ALL_COMPANIES = [c for companies in COMPANIES.values() for c in companies]
 
-# ---------------------------------------------------------------------------
-# News categories we care about
-# ---------------------------------------------------------------------------
-
 NEWS_CATEGORIES = [
-    "AI moves",       # product launches, AI integrations, agentic features
-    "Funding & M&A",  # funding rounds, acquisitions, IPOs, PE activity
-    "Earnings",       # revenue results, guidance, stock moves
-    "Layoffs & org",  # headcount changes, leadership moves, restructuring
+    "AI moves",
+    "Funding & M&A",
+    "Earnings",
+    "Layoffs & org",
 ]
 
 
-def build_prompt(companies: list[str], categories: list[str]) -> str:
+def build_prompt(companies, categories):
     company_list = ", ".join(companies)
-    category_list = ", ".join(categories)
     week_ending = datetime.date.today().strftime("%d %B %Y")
-
-    return f"""You are an industry analyst producing a weekly news digest for a senior commercial strategy professional
-targeting roles at enterprise SaaS and cybersecurity companies.
+    return f"""You are an industry analyst producing a weekly news digest for a senior commercial strategy professional targeting roles at enterprise SaaS and cybersecurity companies.
 
 Today's date is {week_ending}. Search the web for the most recent news (last 7 days) on the following companies:
 
 {company_list}
 
-Organise your findings into exactly these four sections, in this order:
-1. AI Moves — product launches, agentic AI features, model integrations, partnerships with AI vendors
-2. Funding & M&A — funding rounds, acquisitions, IPOs, PE buyouts, mergers
-3. Earnings — quarterly results, revenue guidance, stock reactions, analyst upgrades/downgrades
-4. Layoffs & Org — headcount reductions, leadership changes, restructuring announcements
+Organise your findings into exactly these four sections:
+1. AI Moves
+2. Funding & M&A
+3. Earnings
+4. Layoffs & Org
 
-Rules:
-- Only include items where something actually happened in the last 7 days. Do not speculate.
-- For each item, format as: **Company Name** — one or two sentences summarising what happened and why it matters.
-- If a category has no news this week, write: "No significant news this week."
-- At the end, add a short "So what?" paragraph (3–5 sentences) summarising the biggest strategic signal of the week
-  for someone evaluating these companies as potential employers. Flag any company that looks particularly strong
-  or particularly at risk right now.
-- Be direct and analytical. No filler phrases.
+For each item: **Company Name** — one or two sentences on what happened and why it matters.
+If a category has no news this week, write: No significant news this week.
+End with a short So what? paragraph summarising the biggest strategic signal of the week.
 
-Return the digest as plain structured text. Use the exact section headings listed above."""
+Return as plain structured text using the exact section headings above."""
 
-def call_anthropic_with_retry(create_call, max_retries: int = 6):
-    """
-    Retries Anthropic API calls when rate-limited (HTTP 429).
-    Waits longer each retry.
-    """
-    for attempt in range(max_retries):
-        try:
-            return create_call()
-        except anthropic.RateLimitError:
-            # waits about 1s, 2s, 4s, 8s, 16s, 32s (max 60s), plus a tiny random amount
-            sleep_s = min(60, (2 ** attempt) + random.random())
-            print(
-                f"Rate limit hit (429). Waiting {sleep_s:.1f}s then retrying... "
-                f"({attempt+1}/{max_retries})"
-            )
-            time.sleep(sleep_s)
 
-            # last attempt; if it fails again, the error will show clearly
-            return create_call()
-def fetch_digest(client: anthropic.Anthropic, prompt: str) -> str:
-    """Call the Anthropic API with web search enabled."""
-        def _create_call():
-        return client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-    response = call_anthropic_with_retry(_create_call)
-
-    # Extract all text blocks from the response
+def fetch_digest(client, prompt):
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000,
+        tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        messages=[{"role": "user", "content": prompt}],
+    )
     text_parts = [block.text for block in response.content if block.type == "text"]
     return "\n\n".join(text_parts).strip()
 
 
-def text_to_html(digest_text: str, week_label: str) -> str:
-    """Convert the plain-text digest into a clean HTML email."""
-
+def text_to_html(digest_text, week_label):
+    lines = digest_text.split("\n")
+    body_html = ""
     section_colours = {
         "AI Moves": "#185FA5",
         "Funding & M&A": "#0F6E56",
@@ -139,151 +79,79 @@ def text_to_html(digest_text: str, week_label: str) -> str:
         "Layoffs & Org": "#993556",
         "So what?": "#3C3489",
     }
-
-    lines = digest_text.split("\n")
-    body_html = ""
-
     for line in lines:
         line = line.strip()
         if not line:
             continue
-
-        # Section headings
-        matched_heading = False
+        matched = False
         for heading, colour in section_colours.items():
             if line.lower().startswith(heading.lower()):
-                body_html += f"""
-                <tr><td style="padding: 24px 0 8px;">
-                  <p style="margin:0; font-size:13px; font-weight:600;
-                             letter-spacing:0.06em; text-transform:uppercase;
-                             color:{colour};">{line}</p>
-                  <hr style="border:none; border-top:2px solid {colour};
-                              margin:6px 0 0; opacity:0.25;">
-                </td></tr>"""
-                matched_heading = True
+                body_html += f'<tr><td style="padding:24px 0 8px;"><p style="margin:0;font-size:13px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:{colour};">{line}</p><hr style="border:none;border-top:2px solid {colour};margin:6px 0 0;opacity:0.25;"></td></tr>'
+                matched = True
                 break
-
-        if matched_heading:
+        if matched:
             continue
-
-        # Bold company items (lines starting with **)
         if line.startswith("**"):
             parts = line.split("**")
             if len(parts) >= 3:
                 company = parts[1]
                 rest = "**".join(parts[2:]).lstrip(" —–-")
-                body_html += f"""
-                <tr><td style="padding: 6px 0;">
-                  <p style="margin:0; font-size:14px; line-height:1.6; color:#1a1a1a;">
-                    <span style="font-weight:600;">{company}</span>
-                    {f" — {rest}" if rest else ""}
-                  </p>
-                </td></tr>"""
+                body_html += f'<tr><td style="padding:6px 0;"><p style="margin:0;font-size:14px;line-height:1.6;color:#1a1a1a;"><span style="font-weight:600;">{company}</span>{f" — {rest}" if rest else ""}</p></td></tr>'
                 continue
-
-        # Numbered headings like "1. AI Moves"
         if len(line) > 2 and line[0].isdigit() and line[1] == ".":
-            body_html += f"""
-            <tr><td style="padding: 20px 0 4px;">
-              <p style="margin:0; font-size:15px; font-weight:600; color:#111;">{line[3:]}</p>
-            </td></tr>"""
+            body_html += f'<tr><td style="padding:20px 0 4px;"><p style="margin:0;font-size:15px;font-weight:600;color:#111;">{line[3:]}</p></td></tr>'
             continue
-
-        # Regular paragraph text
-        body_html += f"""
-        <tr><td style="padding: 4px 0;">
-          <p style="margin:0; font-size:14px; line-height:1.7; color:#333;">{line}</p>
-        </td></tr>"""
+        body_html += f'<tr><td style="padding:4px 0;"><p style="margin:0;font-size:14px;line-height:1.7;color:#333;">{line}</p></td></tr>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Industry Digest — {week_label}</title>
-</head>
-<body style="margin:0; padding:0; background:#f5f5f0; font-family: -apple-system, BlinkMacSystemFont,
-             'Segoe UI', Helvetica, Arial, sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f0; padding: 32px 16px;">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0"
-             style="background:#ffffff; border-radius:8px; overflow:hidden;
-                    border: 1px solid #e0ddd4;">
-
-        <!-- Header -->
-        <tr>
-          <td style="background:#111; padding: 28px 32px;">
-            <p style="margin:0; font-size:11px; font-weight:600; letter-spacing:0.1em;
-                       text-transform:uppercase; color:#888;">Weekly Industry Digest</p>
-            <p style="margin:8px 0 0; font-size:22px; font-weight:600; color:#ffffff;">
-              {week_label}
-            </p>
-            <p style="margin:6px 0 0; font-size:13px; color:#aaa;">
-              Cybersecurity · Enterprise SaaS · AI Platforms
-            </p>
-          </td>
-        </tr>
-
-        <!-- Body -->
-        <tr>
-          <td style="padding: 24px 32px 32px;">
-            <table width="100%" cellpadding="0" cellspacing="0">
-              {body_html}
-            </table>
-          </td>
-        </tr>
-
-        <!-- Footer -->
-        <tr>
-          <td style="background:#f9f8f5; border-top:1px solid #e0ddd4;
-                     padding: 16px 32px;">
-            <p style="margin:0; font-size:11px; color:#999; line-height:1.6;">
-              Generated automatically using the Anthropic API with live web search.
-              &nbsp;·&nbsp; <a href="https://github.com" style="color:#999;">View on GitHub</a>
-            </p>
-          </td>
-        </tr>
-
-      </table>
-    </td></tr>
-  </table>
+<head><meta charset="UTF-8"><title>Industry Digest — {week_label}</title></head>
+<body style="margin:0;padding:0;background:#f5f5f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f0;padding:32px 16px;">
+<tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;border:1px solid #e0ddd4;">
+<tr><td style="background:#111;padding:28px 32px;">
+<p style="margin:0;font-size:11px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#888;">Weekly Industry Digest</p>
+<p style="margin:8px 0 0;font-size:22px;font-weight:600;color:#ffffff;">{week_label}</p>
+<p style="margin:6px 0 0;font-size:13px;color:#aaa;">Cybersecurity · Enterprise SaaS · AI Platforms</p>
+</td></tr>
+<tr><td style="padding:24px 32px 32px;">
+<table width="100%" cellpadding="0" cellspacing="0">{body_html}</table>
+</td></tr>
+<tr><td style="background:#f9f8f5;border-top:1px solid #e0ddd4;padding:16px 32px;">
+<p style="margin:0;font-size:11px;color:#999;">Generated automatically using the Anthropic API with live web search.</p>
+</td></tr>
+</table>
+</td></tr>
+</table>
 </body>
 </html>"""
 
 
-def send_email(html_content: str, subject: str) -> None:
-    """Send the digest via Gmail SMTP."""
+def send_email(html_content, subject):
     gmail_address = os.environ["GMAIL_ADDRESS"]
     app_password = os.environ["GMAIL_APP_PASSWORD"]
     recipient = os.environ["RECIPIENT_EMAIL"]
-
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"Industry Digest <{gmail_address}>"
     msg["To"] = recipient
-
     msg.attach(MIMEText(html_content, "html"))
-
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(gmail_address, app_password)
         server.sendmail(gmail_address, recipient, msg.as_string())
-
     print(f"Digest sent to {recipient}")
 
 
 def main():
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
     week_label = datetime.date.today().strftime("Week of %-d %B %Y")
     subject = f"Industry Digest — {datetime.date.today().strftime('%-d %b %Y')}"
-
     print(f"Fetching digest for {week_label}...")
     prompt = build_prompt(ALL_COMPANIES, NEWS_CATEGORIES)
     digest_text = fetch_digest(client, prompt)
-
     print("Building email...")
     html = text_to_html(digest_text, week_label)
-
     print("Sending...")
     send_email(html, subject)
     print("Done.")
