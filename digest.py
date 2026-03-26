@@ -22,6 +22,8 @@ import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import anthropic
+import time
+import random
 
 # ---------------------------------------------------------------------------
 # Company list — edit freely, organised by tier
@@ -91,15 +93,36 @@ Rules:
 
 Return the digest as plain structured text. Use the exact section headings listed above."""
 
+def call_anthropic_with_retry(create_call, max_retries: int = 6):
+    """
+    Retries Anthropic API calls when rate-limited (HTTP 429).
+    Waits longer each retry.
+    """
+    for attempt in range(max_retries):
+        try:
+            return create_call()
+        except anthropic.RateLimitError:
+            # waits about 1s, 2s, 4s, 8s, 16s, 32s (max 60s), plus a tiny random amount
+            sleep_s = min(60, (2 ** attempt) + random.random())
+            print(
+                f"Rate limit hit (429). Waiting {sleep_s:.1f}s then retrying... "
+                f"({attempt+1}/{max_retries})"
+            )
+            time.sleep(sleep_s)
 
+            # last attempt; if it fails again, the error will show clearly
+            return create_call()
 def fetch_digest(client: anthropic.Anthropic, prompt: str) -> str:
     """Call the Anthropic API with web search enabled."""
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4000,
-        tools=[{"type": "web_search_20250305", "name": "web_search"}],
-        messages=[{"role": "user", "content": prompt}],
-    )
+        def _create_call():
+        return client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+    response = call_anthropic_with_retry(_create_call)
 
     # Extract all text blocks from the response
     text_parts = [block.text for block in response.content if block.type == "text"]
